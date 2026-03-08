@@ -4,6 +4,7 @@ import { logger } from "npm:hono/logger";
 import { createClient } from "npm:@supabase/supabase-js";
 import { Buffer } from "node:buffer";
 import * as kv from "./kv_store.tsx";
+import { createAdminRoutes } from "./routes/admin.ts";
 
 const app = new Hono();
 
@@ -956,9 +957,12 @@ const registerRoutes = (r: Hono) => {
 // Create a sub-router for all API endpoints
 const api = new Hono();
 registerRoutes(api);
+const adminRoutes = createAdminRoutes({ getUser, kv });
+api.route("/admin", adminRoutes);
 
 // Register routes explicitly on the main app to avoid mounting issues in some environments
 registerRoutes(app as unknown as Hono); // Register at root
+app.route("/admin", adminRoutes);
 const prefix = "/make-server-4b732228";
 // Use a more robust matching for the email parameter which may contain @ and dots
 app.get(`${prefix}/notifications/:email`, async (c) => {
