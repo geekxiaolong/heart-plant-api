@@ -27,7 +27,6 @@ export function createAdminRoutes(deps: AdminRouteDeps) {
     if (!isAdminUser(user)) {
       return c.json({ success: false, error: "Forbidden" }, 403);
     }
-    c.set("adminUser", user);
     await next();
   });
 

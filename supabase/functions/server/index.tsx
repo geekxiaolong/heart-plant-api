@@ -5,6 +5,10 @@ import { createClient } from "npm:@supabase/supabase-js";
 import { Buffer } from "node:buffer";
 import * as kv from "./kv_store.tsx";
 import { createAdminRoutes } from "./routes/admin.ts";
+import { createLibraryRoutes } from "./routes/library.ts";
+import { createPlantRoutes } from "./routes/plants.ts";
+import { createMoodJournalRoutes } from "./routes/moods-journals.ts";
+import { createMomentRoutes } from "./routes/moments.ts";
 
 const app = new Hono();
 
@@ -273,98 +277,6 @@ const registerRoutes = (r: Hono) => {
     }
   });
 
-  r.get("/library", async (c) => {
-    try {
-      const library = await kv.getByPrefix("library:");
-      return c.json(library || []);
-    } catch (err: any) {
-      return c.json({ error: "Failed to fetch library", details: err.message }, 500);
-    }
-  });
-
-  r.post("/library", async (c) => {
-    try {
-      const data = await c.req.json();
-      if (!data.id) data.id = `p${Date.now()}`;
-      if (!data.addedDate) data.addedDate = new Date().toISOString().split("T")[0];
-      await kv.set(`library:${data.id}`, data);
-      return c.json(data);
-    } catch (err: any) {
-      return c.json({ error: "Failed to save library item", details: err.message }, 400);
-    }
-  });
-
-  r.get("/plants", async (c) => {
-    try {
-      const user = await getUser(c);
-      const allPlants = (await kv.getByPrefix("plant:")) || [];
-      const isAdminView = c.req.query("admin_view") === "true";
-
-      if (!user) return c.json([]);
-
-      const userEmail = user.email?.toLowerCase();
-      const isAdmin = user.user_metadata?.role === 'admin' || userEmail === '776427024@qq.com';
-
-      if (isAdmin && isAdminView) return c.json(allPlants);
-
-      const userPlants = allPlants.filter((p: any) => 
-        p.ownerEmails?.some((e: string) => e.toLowerCase() === userEmail)
-      );
-      return c.json(userPlants);
-    } catch (err: any) {
-      return c.json({ error: "Failed to fetch plants", details: err.message }, 500);
-    }
-  });
-
-  r.post("/adopt", async (c) => {
-    try {
-      const user = await getUser(c);
-      if (!user) return c.json({ error: "Unauthorized" }, 401);
-
-      const body = await c.req.json();
-      const libraryId = body.id;
-      const userEmail = user.email?.toLowerCase();
-
-      // STRICT ANTI-DUPLICATE CHECK
-      // 1. Check if user already has an active adoption for this specific library item
-      const allPlants = (await kv.getByPrefix("plant:")) || [];
-      const alreadyAdopted = allPlants.find((p: any) => 
-        p.originalId === libraryId && 
-        p.ownerEmails?.some((e: string) => e.toLowerCase() === userEmail)
-      );
-
-      if (alreadyAdopted) {
-        return c.json({ 
-          success: false,
-          error: "DUPLICATE_ADOPTION", 
-          message: `你已经拥有「${alreadyAdopted.name}」了，快去空间看看它吧 ✨`,
-          plantId: alreadyAdopted.id
-        }, 400);
-      }
-
-      // 2. Prevent rapid fire requests (using a simple timestamp check if needed, but the check above should handle it)
-
-      const id = libraryId || Date.now();
-      const plantKey = `plant:${id}-${Date.now()}`;
-      const newPlant = {
-        ...body,
-        id: plantKey,
-        originalId: libraryId,
-        ownerEmails: [user.email],
-        ownerIds: [user.id],
-        created_at: new Date().toISOString(),
-      };
-      await kv.set(plantKey, newPlant);
-      
-      // Update stats
-      await updateUserStats(user.id, 'plants', 1);
-
-      return c.json({ ...newPlant, success: true });
-    } catch (err: any) {
-      return c.json({ error: "Failed to adopt plant", details: err.message, success: false }, 400);
-    }
-  });
-
   r.get("/profile", async (c) => {
     const user = await getUser(c);
     if (!user) return c.json({ error: "Unauthorized" }, 401);
@@ -372,52 +284,15 @@ const registerRoutes = (r: Hono) => {
       id: user.id,
       email: user.email,
       name: user.user_metadata?.name || user.email?.split("@")[0],
-      avatar: user.user_metadata?.avatar || "",
+      avatar: ((user.user_metadata as Record<string, any> | undefined)?.avatar as string | undefined) || "",
       role: user.user_metadata?.role || (user.email?.toLowerCase() === '776427024@qq.com' ? 'admin' : 'user')
     });
   });
 
-  r.post("/mood", async (c) => {
-    try {
-      const user = await getUser(c);
-      const { plantId, mood, content, tags, timestamp } = await c.req.json();
-      const moodId = `mood:${plantId}:${Date.now()}`;
-      const moodRecord = { id: moodId, plantId, mood, content, tags: tags || [], timestamp, created_at: new Date().toISOString(), userId: user?.id };
-      await kv.set(moodId, moodRecord);
-      
-      if (user) {
-        await updateUserStats(user.id, 'posts', 1);
-      }
-      
-      return c.json(moodRecord);
-    } catch (err: any) {
-      return c.json({ error: "Failed to save mood", details: err.message }, 400);
-    }
-  });
-
-  r.get("/mood/:plantId", async (c) => {
-    const plantId = c.req.param("plantId");
-    const moods = await kv.getByPrefix(`mood:${plantId}:`);
-    return c.json((moods || []).sort((a: any, b: any) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()));
-  });
-
-  r.post("/journal", async (c) => {
-    try {
-      const user = await getUser(c);
-      const { plantId, title, style, entries, timestamp } = await c.req.json();
-      const journalId = `journal:${plantId}:${Date.now()}`;
-      const journalRecord = { id: journalId, plantId, title, style, entries, timestamp, created_at: new Date().toISOString(), userId: user?.id };
-      await kv.set(journalId, journalRecord);
-      
-      if (user) {
-        await updateUserStats(user.id, 'posts', 1);
-      }
-      
-      return c.json(journalRecord);
-    } catch (err: any) {
-      return c.json({ error: "Failed to save journal", details: err.message }, 400);
-    }
-  });
+  r.route("/", createLibraryRoutes({ kv }));
+  r.route("/", createPlantRoutes({ getUser, updateUserStats, kv }));
+  r.route("/", createMoodJournalRoutes({ getUser, updateUserStats, kv }));
+  r.route("/", createMomentRoutes({ getUser, updateUserStats, kv }));
 
   // Batch seeding to prevent 502 gateway errors and rate limiting
   r.post("/seed-batch", async (c) => {
@@ -460,39 +335,6 @@ const registerRoutes = (r: Hono) => {
     }
   });
 
-  r.get("/journal/:plantId", async (c) => {
-    const plantId = c.req.param("plantId");
-    const journals = await kv.getByPrefix(`journal:${plantId}:`);
-    return c.json((journals || []).sort((a: any, b: any) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()));
-  });
-
-  r.get("/all-journals", async (c) => {
-    const journals = await kv.getByPrefix(`journal:`);
-    return c.json((journals || []).sort((a: any, b: any) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime()));
-  });
-
-  r.get("/journal-detail/:id", async (c) => {
-    try {
-      const id = c.req.param("id");
-      const journal = await kv.get(id);
-      if (!journal) return c.json({ error: "Journal not found" }, 404);
-      return c.json(journal);
-    } catch (err: any) {
-      return c.json({ error: "Failed to fetch journal detail", details: err.message }, 500);
-    }
-  });
-
-  r.get("/mood-detail/:id", async (c) => {
-    try {
-      const id = c.req.param("id");
-      const mood = await kv.get(id);
-      if (!mood) return c.json({ error: "Mood not found" }, 404);
-      return c.json(mood);
-    } catch (err: any) {
-      return c.json({ error: "Failed to fetch mood detail", details: err.message }, 500);
-    }
-  });
-
   r.post("/log-activity", async (c) => {
     try {
       const user = await getUser(c);
@@ -517,78 +359,6 @@ const registerRoutes = (r: Hono) => {
       return c.json({ success: true, activity });
     } catch (err: any) {
       return c.json({ error: "Failed to log activity", details: err.message }, 400);
-    }
-  });
-
-  r.get("/moments", async (c) => {
-    const moments = await kv.getByPrefix("moment:");
-    return c.json((moments || []).sort((a: any, b: any) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()));
-  });
-
-  r.post("/moments", async (c) => {
-    try {
-      const user = await getUser(c);
-      if (!user) return c.json({ error: "Unauthorized" }, 401);
-      const body = await c.req.json();
-      const momentId = `moment:${Date.now()}`;
-      const newMoment = {
-        id: momentId,
-        userId: user.id,
-        user: user.user_metadata?.name || user.email.split("@")[0],
-        avatar: (user.user_metadata?.name || user.email.split("@")[0])[0].toUpperCase(),
-        content: body.content,
-        image: body.image || "",
-        tag: body.tag || "成长日志",
-        likes: 0,
-        comments: 0,
-        created_at: new Date().toISOString(),
-      };
-      await kv.set(momentId, newMoment);
-      
-      // Update stats
-      await updateUserStats(user.id, 'posts', 1);
-
-      return c.json(newMoment);
-    } catch (err: any) {
-      return c.json({ error: "Failed to post moment", details: err.message }, 400);
-    }
-  });
-
-  r.post("/moments/:id/like", async (c) => {
-    const id = c.req.param("id");
-    const m = await kv.get(id);
-    if (!m) return c.json({ error: "Not found" }, 404);
-    m.likes = (m.likes || 0) + 1;
-    await kv.set(id, m);
-    
-    // Increment likes for the post owner
-    if (m.userId) {
-      await updateUserStats(m.userId, 'likes', 1);
-    }
-    
-    return c.json(m);
-  });
-
-  r.get("/moments/:id/comments", async (c) => {
-    const id = c.req.param("id");
-    const comments = await kv.getByPrefix(`comment:${id}:`);
-    return c.json((comments || []).sort((a: any, b: any) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()));
-  });
-
-  r.post("/moments/:id/comments", async (c) => {
-    try {
-      const user = await getUser(c);
-      if (!user) return c.json({ error: "Unauthorized" }, 401);
-      const mid = c.req.param("id");
-      const body = await c.req.json();
-      const cid = `comment:${mid}:${Date.now()}`;
-      const comment = { id: cid, momentId: mid, userId: user.id, user: user.user_metadata?.name || user.email.split("@")[0], content: body.content, created_at: new Date().toISOString() };
-      await kv.set(cid, comment);
-      const m = await kv.get(mid);
-      if (m) { m.comments = (m.comments || 0) + 1; await kv.set(mid, m); }
-      return c.json(comment);
-    } catch (err: any) {
-      return c.json({ error: "Failed to post comment", details: err.message }, 400);
     }
   });
 
@@ -622,8 +392,9 @@ const registerRoutes = (r: Hono) => {
         if (!plant.ownerEmails) plant.ownerEmails = [];
         if (!plant.ownerIds) plant.ownerIds = [];
         
-        plant.owners.push(userName || user.user_metadata?.name || user.email.split("@")[0]);
-        plant.ownerEmails.push(user.email);
+        const userEmail = user.email || "";
+        plant.owners.push(userName || user.user_metadata?.name || userEmail.split("@")[0] || "用户");
+        plant.ownerEmails.push(userEmail);
         plant.ownerIds.push(user.id);
         
         await kv.set(data.plantId, plant);
@@ -633,7 +404,8 @@ const registerRoutes = (r: Hono) => {
       }
       
       // 3. Delete the notification
-      await kv.del(`notification:${user.email.toLowerCase()}:${inviteCode?.toUpperCase()}`);
+      const userEmail = (user.email || "").toLowerCase();
+      await kv.del(`notification:${userEmail}:${inviteCode?.toUpperCase()}`);
       
       return c.json({ success: true, plant });
     } catch (err: any) {

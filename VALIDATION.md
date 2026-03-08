@@ -42,6 +42,27 @@
 - 若要继续做真实数据联调，需要补充：
   - `SUPABASE_SERVICE_ROLE_KEY`
 
+### A7 路由模块拆分回归（2026-03-08 23:53 Asia/Shanghai）
+
+#### 本次拆分
+- 从 `supabase/functions/server/index.tsx` 抽离以下模块：
+  - `routes/library.ts`
+  - `routes/plants.ts`
+  - `routes/moods-journals.ts`
+  - `routes/moments.ts`
+- `index.tsx` 改为集中装配路由，保留 `/health`、`/profile`、`/admin/*` 及其余尚未拆分接口
+- 同时修复了本地 `deno check` 暴露的若干类型问题（`user_metadata.avatar`、`user.email` 可选、`admin.ts` 的 `c.set` 泛型报错）
+
+#### A7 验证
+- `deno check supabase/functions/server/index.tsx`：通过
+- 本地启动：`DEV_ADMIN_BYPASS_TOKEN=local-dev-admin deno task serve`：通过
+- `GET /health`：通过
+- `GET /admin/users`（`Authorization: Bearer local-dev-admin`）：通过
+- `GET /admin/plants`（`Authorization: Bearer local-dev-admin`）：通过
+- `GET /library`：通过，返回 `[]`
+- `GET /moments`：通过，返回 `[]`
+
 ### 下一步建议
-- 进入 A7：继续拆分 `supabase/functions/server/index.tsx`
-- 优先抽离 library / plants / moments / journal / mood 等路由模块
+- 继续 A7/A8：拆分剩余非 admin 路由（invite / notification / stats / timeline / upload 等）
+- 保持 `/health` 与 `/admin/*` 持续回归
+- 待补充 `SUPABASE_SERVICE_ROLE_KEY` 后再做真实写库联调
