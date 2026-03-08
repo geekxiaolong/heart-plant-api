@@ -12,9 +12,12 @@ CREATE TABLE kv_store_4b732228 (
 // This file provides a simple key-value interface for storing Figma Make data. It should be adequate for most small-scale use cases.
 import { createClient } from "jsr:@supabase/supabase-js@2.49.8";
 
+const defaultSupabaseUrl = "https://dkszigraljeptpeiimzg.supabase.co";
+const defaultAnonKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRrc3ppZ3JhbGplcHRwZWlpbXpnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI0MjkyMDEsImV4cCI6MjA4ODAwNTIwMX0.piPkMGZDQ6O4l-YhZwPIU-Fp5Q-UUwt5fwvYlKVu6x0";
+
 const client = () => createClient(
-  Deno.env.get("SUPABASE_URL"),
-  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY"),
+  Deno.env.get("SUPABASE_URL") || defaultSupabaseUrl,
+  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || defaultAnonKey,
 );
 
 // Set stores a key-value pair in the database.
