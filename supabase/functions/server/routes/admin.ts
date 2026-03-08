@@ -10,6 +10,17 @@ interface AdminRouteDeps {
   };
 }
 
+const sortByNewest = (items: any[] = [], fieldCandidates = ["timestamp", "created_at"]) =>
+  [...items].sort((a: any, b: any) => {
+    const getTime = (item: any) => {
+      for (const field of fieldCandidates) {
+        if (item?.[field]) return new Date(item[field]).getTime();
+      }
+      return 0;
+    };
+    return getTime(b) - getTime(a);
+  });
+
 function isAdminUser(user: any) {
   if (!user) return false;
   const userEmail = user.email?.toLowerCase?.() || "";
@@ -92,6 +103,68 @@ export function createAdminRoutes(deps: AdminRouteDeps) {
       });
     } catch (err: any) {
       return c.json({ success: false, error: "Failed to fetch admin plants", details: err.message }, 500);
+    }
+  });
+
+  admin.get("/journals", async (c) => {
+    try {
+      const plantId = c.req.query("plantId");
+      const limit = parseInt(c.req.query("limit") || "50");
+      const journals = sortByNewest((await deps.kv.getByPrefix("journal:")) || []);
+      const items = plantId ? journals.filter((journal: any) => journal.plantId === plantId) : journals;
+      return c.json({ success: true, items: items.slice(0, limit), total: items.length });
+    } catch (err: any) {
+      return c.json({ success: false, error: "Failed to fetch admin journals", details: err.message }, 500);
+    }
+  });
+
+  admin.get("/moments", async (c) => {
+    try {
+      const userId = c.req.query("userId");
+      const limit = parseInt(c.req.query("limit") || "50");
+      const moments = sortByNewest((await deps.kv.getByPrefix("moment:")) || []);
+      const items = userId ? moments.filter((moment: any) => moment.userId === userId) : moments;
+      return c.json({ success: true, items: items.slice(0, limit), total: items.length });
+    } catch (err: any) {
+      return c.json({ success: false, error: "Failed to fetch admin moments", details: err.message }, 500);
+    }
+  });
+
+  admin.get("/stats/overview", async (c) => {
+    try {
+      const [plants, journals, moments, moods, stats] = await Promise.all([
+        deps.kv.getByPrefix("plant:"),
+        deps.kv.getByPrefix("journal:"),
+        deps.kv.getByPrefix("moment:"),
+        deps.kv.getByPrefix("mood:"),
+        deps.kv.getByPrefix("stats:"),
+      ]);
+
+      const totalLikes = (moments || []).reduce((sum: number, moment: any) => sum + (moment.likes || 0), 0);
+      const totalComments = (moments || []).reduce((sum: number, moment: any) => sum + (moment.comments || 0), 0);
+      const activeUsers = new Set((plants || []).flatMap((plant: any) => plant.ownerEmails || [])).size;
+      const recentJournals = sortByNewest(journals || []).slice(0, 5);
+      const recentMoments = sortByNewest(moments || []).slice(0, 5);
+
+      return c.json({
+        success: true,
+        overview: {
+          plantCount: plants?.length || 0,
+          journalCount: journals?.length || 0,
+          momentCount: moments?.length || 0,
+          moodCount: moods?.length || 0,
+          statsCount: stats?.length || 0,
+          activeUsers,
+          totalLikes,
+          totalComments,
+        },
+        recent: {
+          journals: recentJournals,
+          moments: recentMoments,
+        },
+      });
+    } catch (err: any) {
+      return c.json({ success: false, error: "Failed to fetch admin stats overview", details: err.message }, 500);
     }
   });
 

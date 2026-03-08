@@ -2,13 +2,17 @@ import { Hono } from "npm:hono";
 import { cors } from "npm:hono/cors";
 import { logger } from "npm:hono/logger";
 import { createClient } from "npm:@supabase/supabase-js";
-import { Buffer } from "node:buffer";
 import * as kv from "./kv_store.tsx";
 import { createAdminRoutes } from "./routes/admin.ts";
 import { createLibraryRoutes } from "./routes/library.ts";
 import { createPlantRoutes } from "./routes/plants.ts";
 import { createMoodJournalRoutes } from "./routes/moods-journals.ts";
 import { createMomentRoutes } from "./routes/moments.ts";
+import { createInviteRoutes } from "./routes/invites.ts";
+import { createNotificationRoutes } from "./routes/notifications.ts";
+import { createStatsRoutes } from "./routes/stats.ts";
+import { createUploadRoutes } from "./routes/upload.ts";
+import { createTimelineRoutes } from "./routes/timeline.ts";
 
 const app = new Hono();
 
@@ -293,6 +297,11 @@ const registerRoutes = (r: Hono) => {
   r.route("/", createPlantRoutes({ getUser, updateUserStats, kv }));
   r.route("/", createMoodJournalRoutes({ getUser, updateUserStats, kv }));
   r.route("/", createMomentRoutes({ getUser, updateUserStats, kv }));
+  r.route("/", createInviteRoutes({ getUser, updateUserStats, kv }));
+  r.route("/", createNotificationRoutes({ kv }));
+  r.route("/", createStatsRoutes({ getUser, updateUserStats, kv }));
+  r.route("/", createUploadRoutes({ supabase, bucketName }));
+  r.route("/", createTimelineRoutes({ kv }));
 
   // Batch seeding to prevent 502 gateway errors and rate limiting
   r.post("/seed-batch", async (c) => {
@@ -362,307 +371,6 @@ const registerRoutes = (r: Hono) => {
     }
   });
 
-  r.post("/generate-invite", async (c) => {
-    try {
-      const { plantId, inviterId, inviterName } = await c.req.json();
-      const code = Math.random().toString(36).substring(2, 8).toUpperCase();
-      const data = { code, plantId, inviterId, inviterName, timestamp: new Date().toISOString() };
-      await kv.set(`invite:${code}`, data);
-      return c.json({ success: true, code });
-    } catch (err: any) {
-      return c.json({ error: "Failed to generate invite", details: err.message }, 400);
-    }
-  });
-
-  r.post("/accept-invite", async (c) => {
-    try {
-      const user = await getUser(c);
-      if (!user) return c.json({ error: "Unauthorized" }, 401);
-      const { inviteCode, userName } = await c.req.json();
-      const data = await kv.get(`invite:${inviteCode?.toUpperCase()}`);
-      if (!data) return c.json({ error: "Invalid invite code" }, 404);
-      const plant = await kv.get(data.plantId);
-      if (!plant) return c.json({ error: "Plant not found" }, 404);
-      
-      if (!plant.ownerEmails) plant.ownerEmails = [];
-      if (!plant.owners) plant.owners = [];
-      
-      if (!plant.ownerEmails.includes(user.email)) {
-        if (!plant.owners) plant.owners = [];
-        if (!plant.ownerEmails) plant.ownerEmails = [];
-        if (!plant.ownerIds) plant.ownerIds = [];
-        
-        const userEmail = user.email || "";
-        plant.owners.push(userName || user.user_metadata?.name || userEmail.split("@")[0] || "用户");
-        plant.ownerEmails.push(userEmail);
-        plant.ownerIds.push(user.id);
-        
-        await kv.set(data.plantId, plant);
-        
-        // Update stats for the user who accepted
-        await updateUserStats(user.id, 'plants', 1);
-      }
-      
-      // 3. Delete the notification
-      const userEmail = (user.email || "").toLowerCase();
-      await kv.del(`notification:${userEmail}:${inviteCode?.toUpperCase()}`);
-      
-      return c.json({ success: true, plant });
-    } catch (err: any) {
-      return c.json({ error: "Failed to accept invite", details: err.message }, 400);
-    }
-  });
-
-  r.get("/camera-snapshot/:id", async (c) => {
-    return c.json({ error: "Camera snapshot not available", message: "Use WebRTC stream instead" }, 503);
-  });
-
-  r.post("/follow", async (c) => {
-    try {
-      const user = await getUser(c);
-      if (!user) return c.json({ error: "Unauthorized" }, 401);
-      const { targetUserId } = await c.req.json();
-      const key = `follow:${user.id}:${targetUserId}`;
-      await kv.set(key, { followerId: user.id, targetUserId, timestamp: new Date().toISOString() });
-      return c.json({ success: true });
-    } catch (err: any) {
-      return c.json({ error: "Failed to follow", details: err.message }, 400);
-    }
-  });
-
-  r.post("/send-direct-invite", async (c) => {
-    try {
-      const { plantId, inviterId, inviterName, targetEmail } = await c.req.json();
-      const code = Math.random().toString(36).substring(2, 8).toUpperCase();
-      const timestamp = new Date().toISOString();
-      
-      // 1. Create the invite
-      const inviteData = { code, plantId, inviterId, inviterName, timestamp };
-      await kv.set(`invite:${code}`, inviteData);
-      
-      // 2. Create the notification for the target user
-      const notificationId = `notification:${targetEmail.toLowerCase()}:${code}`;
-      const notificationData = {
-        id: notificationId,
-        from: inviterName,
-        inviteCode: code,
-        timestamp: timestamp
-      };
-      await kv.set(notificationId, notificationData);
-      
-      return c.json({ success: true, code });
-    } catch (err: any) {
-      return c.json({ error: "Failed to send direct invite", details: err.message }, 400);
-    }
-  });
-
-  r.get("/notifications/:email", async (c) => {
-    try {
-      const email = c.req.param("email").toLowerCase();
-      const notifications = await kv.getByPrefix(`notification:${email}:`);
-      return c.json(notifications || []);
-    } catch (err: any) {
-      return c.json({ error: "Failed to fetch notifications", details: err.message }, 500);
-    }
-  });
-
-  r.get("/following", async (c) => {
-    const user = await getUser(c);
-    if (!user) return c.json({ error: "Unauthorized" }, 401);
-    const follows = await kv.getByPrefix(`follow:${user.id}:`);
-    return c.json(follows || []);
-  });
-
-  r.get("/stats/:userId", async (c) => {
-    const userId = c.req.param("userId");
-    const user = await getUser(c); // Try to get user to verify if they are looking at their own stats
-    
-    let stats = await kv.get(`stats:${userId}`);
-    const defaultStats = { 
-      userId,
-      level: 1, 
-      exp: 0, 
-      totalPosts: 0, 
-      totalLikes: 0, 
-      totalComments: 0, 
-      waterCount: 0, 
-      fertilizerCount: 0, 
-      plantsAdopted: 0, 
-      loginStreak: 0, 
-      achievements: [] 
-    };
-    
-    if (!stats) stats = defaultStats;
-    else stats = { ...defaultStats, ...stats };
-
-    // SANITY CHECK: If user is looking at their own stats, we can re-verify counts
-    if (user && user.id === userId) {
-      try {
-        let needsUpdate = false;
-        const userEmail = user.email?.toLowerCase();
-        console.log(`[Stats Sync] Starting sync for user: ${userId} (${userEmail})`);
-
-        // 1. Re-verify plant count
-        const allPlants = (await kv.getByPrefix("plant:")) || [];
-        const userPlants = allPlants.filter((p: any) => {
-          const hasId = (p.ownerIds || []).includes(userId);
-          const hasEmail = userEmail && (p.ownerEmails || []).some((e: string) => e.toLowerCase() === userEmail);
-          return hasId || hasEmail;
-        });
-        
-        console.log(`[Stats Sync] Found ${userPlants.length} plants (Current in stats: ${stats.plantsAdopted})`);
-        if (userPlants.length !== stats.plantsAdopted) {
-          stats.plantsAdopted = userPlants.length;
-          needsUpdate = true;
-        }
-
-        // 2. Re-verify post count (moments, moods, journals)
-        const allMoments = (await kv.getByPrefix("moment:")) || [];
-        const userMoments = allMoments.filter((m: any) => m.userId === userId);
-        
-        const allMoods = (await kv.getByPrefix("mood:")) || [];
-        const userMoods = allMoods.filter((m: any) => m.userId === userId);
-
-        const allJournals = (await kv.getByPrefix("journal:")) || [];
-        const userJournals = allJournals.filter((j: any) => j.userId === userId);
-
-        const actualTotalPosts = userMoments.length + userMoods.length + userJournals.length;
-        console.log(`[Stats Sync] Found ${actualTotalPosts} total posts (Current in stats: ${stats.totalPosts})`);
-        if (actualTotalPosts !== stats.totalPosts) {
-          stats.totalPosts = actualTotalPosts;
-          needsUpdate = true;
-        }
-
-        // 3. Re-verify received likes
-        const actualTotalLikes = userMoments.reduce((sum: number, m: any) => sum + (m.likes || 0), 0);
-        console.log(`[Stats Sync] Found ${actualTotalLikes} total likes (Current in stats: ${stats.totalLikes})`);
-        if (actualTotalLikes !== stats.totalLikes) {
-          stats.totalLikes = actualTotalLikes;
-          needsUpdate = true;
-        }
-        
-        if (needsUpdate) {
-          console.log(`[Stats Sync] Updating stats in KV for ${userId}`);
-          // Trigger a stats update to also check achievements and level
-          await updateUserStats(userId, 'sync', 0, {
-            plantsAdopted: stats.plantsAdopted,
-            totalPosts: stats.totalPosts,
-            totalLikes: stats.totalLikes
-          }); 
-          stats = await kv.get(`stats:${userId}`); // Re-fetch updated stats
-        }
-      } catch (e) {
-        console.error("[Stats Sync] Sanity check failed:", e);
-      }
-    }
-    
-    return c.json(stats);
-  });
-
-  r.post("/upload-snapshot", async (c) => {
-    try {
-      const { image, plantId } = await c.req.json();
-      if (!image) return c.json({ error: "No image data" }, 400);
-      if (!plantId) return c.json({ error: "No plantId provided" }, 400);
-
-      console.log(`Processing snapshot upload for plant: ${plantId}`);
-
-      // Extract base64 part safely
-      const matches = image.match(/^data:image\/(\w+);base64,(.+)$/);
-      if (!matches) {
-        return c.json({ error: "Invalid image format", details: "Could not parse base64 data" }, 400);
-      }
-      
-      const fileExt = matches[1] || 'png';
-      const base64Data = matches[2];
-      
-      // Use Buffer for safer decoding
-      const bytes = Buffer.from(base64Data, 'base64');
-      
-      const timestamp = Date.now();
-      const sanitizedPlantId = plantId.toString().replace(/[^a-zA-Z0-9]/g, '-');
-      const fileName = `snapshot-${timestamp}.${fileExt}`;
-      const filePath = `${sanitizedPlantId}/${fileName}`;
-
-      console.log(`Uploading ${bytes.length} bytes to storage path: ${filePath}`);
-
-      // Attempt upload with service role
-      const { data, error: uploadError } = await supabase.storage
-        .from(bucketName)
-        .upload(filePath, bytes, {
-          contentType: `image/${fileExt}`,
-          upsert: true,
-        });
-
-      if (uploadError) {
-        console.error("Supabase Storage Upload Error Detail:", uploadError);
-        
-        // Use a broader check for missing bucket
-        const isNotFoundError = 
-          uploadError.message?.toLowerCase().includes("not found") || 
-          (uploadError as any).status === 404 || 
-          (uploadError as any).statusCode === "404" ||
-          (uploadError as any).status === 400; // Sometimes 400 is returned for bad bucket
-
-        if (isNotFoundError) {
-          console.log(`Bucket ${bucketName} might be missing, attempting to create and retry...`);
-          // Try to create the bucket, it will fail if it exists which is fine
-          const { error: createError } = await supabase.storage.createBucket(bucketName, { 
-            public: true, // Make public to simplify signed URL issues if any
-            fileSizeLimit: 20971520 
-          });
-          
-          if (createError && !createError.message?.includes("already exists")) {
-            console.error("Failed to create bucket during retry:", createError);
-          }
-          
-          // Small delay to allow bucket creation to propagate
-          await new Promise(resolve => setTimeout(resolve, 500));
-          
-          // Retry the upload after creation attempt
-          const { data: retryData, error: retryError } = await supabase.storage
-            .from(bucketName)
-            .upload(filePath, bytes, {
-              contentType: `image/${fileExt}`,
-              upsert: true,
-            });
-            
-          if (retryError) {
-            console.error("Retry failed:", retryError);
-            throw retryError;
-          }
-        } else {
-          throw uploadError;
-        }
-      }
-
-      // Create signed URL (valid for 1 year)
-      const { data: signedUrlData, error: signedUrlError } = await supabase.storage
-        .from(bucketName)
-        .createSignedUrl(filePath, 31536000);
-
-      if (signedUrlError) {
-        console.error("Supabase Storage Signed URL Error:", signedUrlError);
-        throw signedUrlError;
-      }
-
-      console.log("Upload successful, signed URL generated");
-
-      return c.json({ 
-        success: true, 
-        url: signedUrlData.signedUrl,
-        path: filePath 
-      });
-    } catch (err: any) {
-      console.error("Upload route catch block:", err);
-      return c.json({ 
-        error: "Failed to upload snapshot", 
-        details: err.message || "Unknown error during upload process",
-        success: false
-      }, 500);
-    }
-  });
-
   r.get("/achievements", (c) => {
     return c.json(ACHIEVEMENTS);
   });
@@ -678,66 +386,6 @@ const registerRoutes = (r: Hono) => {
     });
   });
 
-  // Plant timeline - combines activities, moods, and journals for a specific plant
-  r.get("/plant-timeline/:plantId", async (c) => {
-    try {
-      const plantId = c.req.param("plantId");
-      const page = parseInt(c.req.query("page") || "1");
-      const limit = parseInt(c.req.query("limit") || "10");
-      const offset = (page - 1) * limit;
-      
-      // Fetch all related data
-      const [activities, moods, journals] = await Promise.all([
-        kv.getByPrefix(`activity:${plantId}:`),
-        kv.getByPrefix(`mood:${plantId}:`),
-        kv.getByPrefix(`journal:${plantId}:`)
-      ]);
-      
-      // Transform activities
-      const activityEvents = (activities || []).map((a: any) => ({
-        ...a,
-        type: 'activity',
-        timestamp: a.timestamp || a.created_at
-      }));
-      
-      // Transform moods
-      const moodEvents = (moods || []).map((m: any) => ({
-        ...m,
-        type: 'mood',
-        timestamp: m.timestamp || m.created_at
-      }));
-      
-      // Transform journals
-      const journalEvents = (journals || []).map((j: any) => ({
-        ...j,
-        type: 'journal',
-        timestamp: j.timestamp || j.created_at
-      }));
-      
-      // Combine and sort by timestamp (newest first)
-      const allEvents = [...activityEvents, ...moodEvents, ...journalEvents];
-      allEvents.sort((a, b) => {
-        const timeA = new Date(a.timestamp || 0).getTime();
-        const timeB = new Date(b.timestamp || 0).getTime();
-        return timeB - timeA;
-      });
-
-      const total = allEvents.length;
-      const paginatedEvents = allEvents.slice(offset, offset + limit);
-      const hasMore = offset + limit < total;
-      
-      return c.json({
-        items: paginatedEvents,
-        total,
-        page,
-        limit,
-        hasMore
-      });
-    } catch (err: any) {
-      console.error("Error fetching plant timeline:", err);
-      return c.json({ error: "Failed to fetch timeline", details: err.message }, 500);
-    }
-  });
 };
 
 // Create a sub-router for all API endpoints
@@ -750,45 +398,6 @@ api.route("/admin", adminRoutes);
 registerRoutes(app as unknown as Hono); // Register at root
 app.route("/admin", adminRoutes);
 const prefix = "/make-server-4b732228";
-// Use a more robust matching for the email parameter which may contain @ and dots
-app.get(`${prefix}/notifications/:email`, async (c) => {
-  try {
-    const email = (c.req.param("email") || "").toLowerCase();
-    console.log("Fetching notifications for:", email);
-    const notifications = await kv.getByPrefix(`notification:${email}:`);
-    return c.json(notifications || []);
-  } catch (err: any) {
-    console.error("Notifications error:", err);
-    return c.json({ error: "Failed to fetch notifications", details: err.message }, 500);
-  }
-});
-
-// Fallback regex match for emails with dots/special chars
-app.get(`${prefix}/notifications/:email{.+$}`, async (c) => {
-  try {
-    const email = (c.req.param("email") || "").toLowerCase();
-    const notifications = await kv.getByPrefix(`notification:${email}:`);
-    return c.json(notifications || []);
-  } catch (err: any) {
-    return c.json({ error: "Failed to fetch notifications", details: err.message }, 500);
-  }
-});
-
-app.post(`${prefix}/send-direct-invite`, async (c) => {
-  try {
-    const { plantId, inviterId, inviterName, targetEmail } = await c.req.json();
-    const code = Math.random().toString(36).substring(2, 8).toUpperCase();
-    const timestamp = new Date().toISOString();
-    const inviteData = { code, plantId, inviterId, inviterName, timestamp };
-    await kv.set(`invite:${code}`, inviteData);
-    const notificationId = `notification:${targetEmail.toLowerCase()}:${code}`;
-    const notificationData = { id: notificationId, from: inviterName, inviteCode: code, timestamp: timestamp };
-    await kv.set(notificationId, notificationData);
-    return c.json({ success: true, code });
-  } catch (err: any) {
-    return c.json({ error: "Failed to send direct invite", details: err.message }, 400);
-  }
-});
 
 // Mount the sub-router as a fallback
 app.route(prefix, api);
