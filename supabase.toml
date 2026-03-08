@@ -1,0 +1,4 @@
+project_id = "heart-plant-api"
+
+[functions.server]
+verify_jwt = false
