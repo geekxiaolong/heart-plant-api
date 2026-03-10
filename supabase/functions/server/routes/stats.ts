@@ -12,13 +12,6 @@ interface StatsRouteDeps {
 export function createStatsRoutes(deps: StatsRouteDeps) {
   const stats = new Hono();
 
-  stats.get("/following", async (c) => {
-    const user = await deps.getUser(c);
-    if (!user) return c.json({ error: "Unauthorized" }, 401);
-    const follows = await deps.kv.getByPrefix(`follow:${user.id}:`);
-    return c.json(follows || []);
-  });
-
   stats.get("/stats/:userId", async (c) => {
     const userId = c.req.param("userId");
     const user = await deps.getUser(c);

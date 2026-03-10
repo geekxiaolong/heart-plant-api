@@ -27,6 +27,10 @@ function isAdminUser(user: any) {
   return user.user_metadata?.role === "admin" || userEmail === "776427024@qq.com";
 }
 
+function toPlantKey(id: string) {
+  return id.startsWith("plant:") ? id : `plant:${id}`;
+}
+
 export function createAdminRoutes(deps: AdminRouteDeps) {
   const admin = new Hono();
 
@@ -175,7 +179,8 @@ export function createAdminRoutes(deps: AdminRouteDeps) {
         return c.json({ success: false, error: "Plant id is required" }, 400);
       }
 
-      const plant = await deps.kv.get(`plant:${id}`);
+      const plantKey = toPlantKey(id);
+      const plant = await deps.kv.get(plantKey);
       if (!plant) {
         return c.json({ success: false, error: "Plant not found" }, 404);
       }
@@ -184,8 +189,8 @@ export function createAdminRoutes(deps: AdminRouteDeps) {
         return c.json({ success: false, error: "KV delete is not available" }, 501);
       }
 
-      await deps.kv.del(`plant:${id}`);
-      return c.json({ success: true, deletedId: id });
+      await deps.kv.del(plantKey);
+      return c.json({ success: true, deletedId: plant.id || id, deletedKey: plantKey });
     } catch (err: any) {
       return c.json({ success: false, error: "Failed to delete admin plant", details: err.message }, 500);
     }

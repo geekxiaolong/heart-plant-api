@@ -2,20 +2,153 @@ import { Hono } from "npm:hono";
 
 interface MomentsRouteDeps {
   getUser: (c: any) => Promise<any>;
-  updateUserStats: (userId: string, type: "posts" | "likes" | "comments" | "water" | "fertilizer" | "plants" | "streak" | "exp" | "sync", increment?: number, forceValues?: any) => Promise<any>;
+  updateUserStats: (
+    userId: string,
+    type:
+      | "posts"
+      | "likes"
+      | "comments"
+      | "water"
+      | "fertilizer"
+      | "plants"
+      | "streak"
+      | "exp"
+      | "sync",
+    increment?: number,
+    forceValues?: any,
+  ) => Promise<any>;
   kv: {
     get: (key: string) => Promise<any>;
     getByPrefix: (prefix: string) => Promise<any[]>;
     set: (key: string, value: any) => Promise<void>;
   };
+  supabase?: any;
 }
 
 export function createMomentRoutes(deps: MomentsRouteDeps) {
   const moments = new Hono();
 
+  function fallbackDisplayName(userId: string) {
+    return `用户${userId.slice(0, 6)}`;
+  }
+
+  async function resolveUserProfile(deps: MomentsRouteDeps, userId: string) {
+    const kvProfile = (await deps.kv.get(`profile:${userId}`)) || null;
+    let authProfile: any = null;
+
+    try {
+      if (deps.supabase?.auth?.admin?.getUserById) {
+        const { data, error } = await deps.supabase.auth.admin.getUserById(
+          userId,
+        );
+        if (!error && data?.user) {
+          authProfile = data.user;
+        }
+      }
+    } catch (_err) {
+      // ignore and fallback to KV / moments-derived values
+    }
+
+    const fallbackName = authProfile?.email?.split("@")[0] ||
+      fallbackDisplayName(userId);
+    return {
+      id: userId,
+      name: kvProfile?.name || authProfile?.user_metadata?.name || fallbackName,
+      avatar: kvProfile?.avatar || authProfile?.user_metadata?.avatar || "",
+      bio: kvProfile?.bio || authProfile?.user_metadata?.bio || "",
+      location: kvProfile?.location || authProfile?.user_metadata?.location ||
+        "",
+    };
+  }
+
   moments.get("/moments", async (c) => {
     const items = await deps.kv.getByPrefix("moment:");
-    return c.json((items || []).sort((a: any, b: any) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()));
+    return c.json(
+      (items || []).sort((a: any, b: any) =>
+        new Date(b.created_at || 0).getTime() -
+        new Date(a.created_at || 0).getTime()
+      ),
+    );
+  });
+
+  moments.get("/public/profile/:userId", async (c) => {
+    try {
+      const userId = String(c.req.param("userId") || "").trim();
+      if (!userId) return c.json({ success: false, error: "userId is required" }, 400);
+
+      const profile = await resolveUserProfile(deps, userId);
+      return c.json({
+        success: true,
+        profile,
+        data: profile,
+        userId,
+      });
+    } catch (err: any) {
+      return c.json({
+        success: false,
+        error: "Failed to fetch public profile",
+        details: err.message,
+      }, 500);
+    }
+  });
+
+  moments.get("/profile/:userId", async (c) => {
+    try {
+      const userId = String(c.req.param("userId") || "").trim();
+      if (!userId) return c.json({ success: false, error: "userId is required" }, 400);
+
+      const profile = await resolveUserProfile(deps, userId);
+      return c.json({
+        success: true,
+        profile,
+        data: profile,
+        userId,
+      });
+    } catch (err: any) {
+      return c.json({
+        success: false,
+        error: "Failed to fetch public profile",
+        details: err.message,
+      }, 500);
+    }
+  });
+
+  moments.get("/moments/user/:userId", async (c) => {
+    try {
+      const userId = String(c.req.param("userId") || "").trim();
+      if (!userId) return c.json({ error: "userId is required" }, 400);
+
+      const items = (await deps.kv.getByPrefix("moment:")) || [];
+      const profile = await resolveUserProfile(deps, userId);
+      const userMoments = items
+        .filter((item: any) => item?.userId === userId)
+        .sort((a: any, b: any) =>
+          new Date(b.created_at || 0).getTime() -
+          new Date(a.created_at || 0).getTime()
+        )
+        .map((item: any) => ({
+          ...item,
+          user: profile.name || item.user || fallbackDisplayName(userId),
+          avatar: profile.avatar || item.avatar ||
+            (profile.name || item.user || fallbackDisplayName(userId)).slice(
+              0,
+              1,
+            ).toUpperCase(),
+        }));
+
+      return c.json({
+        success: true,
+        items: userMoments,
+        moments: userMoments,
+        profile,
+        total: userMoments.length,
+      });
+    } catch (err: any) {
+      return c.json({
+        error: "Failed to fetch user moments",
+        details: err.message,
+      }, 500);
+    }
   });
 
   moments.post("/moments", async (c) => {
@@ -42,7 +175,10 @@ export function createMomentRoutes(deps: MomentsRouteDeps) {
 
       return c.json(newMoment);
     } catch (err: any) {
-      return c.json({ error: "Failed to post moment", details: err.message }, 400);
+      return c.json(
+        { error: "Failed to post moment", details: err.message },
+        400,
+      );
     }
   });
 
@@ -63,7 +199,12 @@ export function createMomentRoutes(deps: MomentsRouteDeps) {
   moments.get("/moments/:id/comments", async (c) => {
     const id = c.req.param("id");
     const comments = await deps.kv.getByPrefix(`comment:${id}:`);
-    return c.json((comments || []).sort((a: any, b: any) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()));
+    return c.json(
+      (comments || []).sort((a: any, b: any) =>
+        new Date(b.created_at || 0).getTime() -
+        new Date(a.created_at || 0).getTime()
+      ),
+    );
   });
 
   moments.post("/moments/:id/comments", async (c) => {
@@ -89,7 +230,10 @@ export function createMomentRoutes(deps: MomentsRouteDeps) {
       }
       return c.json(comment);
     } catch (err: any) {
-      return c.json({ error: "Failed to post comment", details: err.message }, 400);
+      return c.json(
+        { error: "Failed to post comment", details: err.message },
+        400,
+      );
     }
   });
 

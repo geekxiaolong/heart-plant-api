@@ -6,8 +6,55 @@ interface UploadRouteDeps {
   bucketName: string;
 }
 
+const createSafePath = (fileName = "file.bin") => {
+  const lastDot = fileName.lastIndexOf(".");
+  const baseName = (lastDot >= 0 ? fileName.slice(0, lastDot) : fileName) || "file";
+  const ext = (lastDot >= 0 ? fileName.slice(lastDot + 1) : "bin") || "bin";
+  const safeBase = baseName.replace(/[^a-zA-Z0-9-_]/g, "-").replace(/-+/g, "-").slice(0, 60) || "file";
+  const safeExt = ext.replace(/[^a-zA-Z0-9]/g, "").slice(0, 10) || "bin";
+  return `uploads/${safeBase}-${Date.now()}-${crypto.randomUUID()}.${safeExt}`;
+};
+
 export function createUploadRoutes(deps: UploadRouteDeps) {
   const upload = new Hono();
+
+  upload.post("/upload-url", async (c) => {
+    try {
+      const { fileName, contentType } = await c.req.json();
+      const path = createSafePath(fileName || "image.png");
+      const { data, error } = await deps.supabase.storage
+        .from(deps.bucketName)
+        .createSignedUploadUrl(path, {
+          upsert: true,
+        });
+
+      if (error) throw error;
+
+      const token = data?.token;
+      if (!token) {
+        return c.json({ success: false, error: "Failed to create upload token" }, 500);
+      }
+
+      const uploadUrl = `${deps.supabase.storageUrl}/object/upload/sign/${deps.bucketName}/${path}?token=${token}`;
+      return c.json({ success: true, uploadUrl, path, contentType: contentType || "application/octet-stream" });
+    } catch (err: any) {
+      return c.json({ success: false, error: "Failed to create upload URL", details: err.message }, 500);
+    }
+  });
+
+  upload.get("/image-url/:path{.+}", async (c) => {
+    try {
+      const path = decodeURIComponent(c.req.param("path"));
+      const { data, error } = await deps.supabase.storage
+        .from(deps.bucketName)
+        .createSignedUrl(path, 31536000);
+
+      if (error) throw error;
+      return c.json({ success: true, url: data.signedUrl, path });
+    } catch (err: any) {
+      return c.json({ success: false, error: "Failed to create image URL", details: err.message }, 500);
+    }
+  });
 
   upload.post("/upload-snapshot", async (c) => {
     try {

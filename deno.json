@@ -1,5 +1,7 @@
 {
   "tasks": {
-    "serve": "deno run -A --watch supabase/functions/server/index.tsx"
+    "serve": "deno run --env-file=.env.local -A --watch supabase/functions/server/index.tsx",
+    "serve:once": "deno run --env-file=.env.local -A supabase/functions/server/index.tsx",
+    "check": "deno check supabase/functions/server/index.tsx"
   }
 }

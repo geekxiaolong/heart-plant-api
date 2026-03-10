@@ -15,10 +15,13 @@ import { createClient } from "jsr:@supabase/supabase-js@2.49.8";
 const defaultSupabaseUrl = "https://dkszigraljeptpeiimzg.supabase.co";
 const defaultAnonKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRrc3ppZ3JhbGplcHRwZWlpbXpnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI0MjkyMDEsImV4cCI6MjA4ODAwNTIwMX0.piPkMGZDQ6O4l-YhZwPIU-Fp5Q-UUwt5fwvYlKVu6x0";
 
-const client = () => createClient(
-  Deno.env.get("SUPABASE_URL") || defaultSupabaseUrl,
-  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || defaultAnonKey,
-);
+const client = () => {
+  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")?.trim();
+  return createClient(
+    Deno.env.get("SUPABASE_URL") || defaultSupabaseUrl,
+    serviceRoleKey || defaultAnonKey,
+  );
+};
 
 // Set stores a key-value pair in the database.
 export const set = async (key: string, value: any): Promise<void> => {
