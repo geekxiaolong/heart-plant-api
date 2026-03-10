@@ -66,3 +66,43 @@
 - 继续 A7/A8：拆分剩余非 admin 路由（invite / notification / stats / timeline / upload 等）
 - 保持 `/health` 与 `/admin/*` 持续回归
 - 待补充 `SUPABASE_SERVICE_ROLE_KEY` 后再做真实写库联调
+
+## 2026-03-10 配置收口
+- `deno.json` 已固定通过 `--env-file=.env.local` 启动，并补充 `serve:once` / `check` 任务
+- 新增 `.env.example`，明确本地所需环境变量
+- 服务端启动逻辑改为：若缺少 `SUPABASE_SERVICE_ROLE_KEY`，仅给出告警并跳过 bucket 初始化、mock library 写入，避免再把 anon key 当作 service role 使用，减少 RLS 误导
+- `.gitignore` 已覆盖 `.env` / `.env.*`，`.env.local` 与 `.env.example` 均不会被 Git 跟踪
+
+## 2026-03-10 路由契约收口（round v6）
+### 本次收口
+- `/moments/user/:userId` 由仅返回裸数组，升级为稳定对象：`{ success, items, moments, profile, total }`
+  - 前端已有 `data/items/moments` 兼容，因此不会破坏现有页面
+  - `profile` 附带 `{ id, name, avatar, bio, location }`，减少页面继续从 moments 反推资料
+- `/following` 由仅返回裸数组，升级为稳定对象：`{ success, items, following, total }`
+  - 用户端列表页与个人页都已兼容 `items/following`
+- `/follow` / `/follow/:userId` / `/is-following/:userId`
+  - 增补 `success` / `data` 字段，保留原有 `isFollowing`、`deleted`、`targetUserId`
+  - 修正关注记录中的 `followerName` / `followerAvatar`，现在写入当前登录用户信息，不再错误复用目标用户资料
+
+### 当前建议视为稳定的接口形状
+- `GET /profile` → 直接返回 profile object：`{ id, email, name, avatar, bio, location, role }`
+- `PUT /profile` → `{ success, profile, authUpdated }`
+- `GET /moments/user/:userId` → `{ success, items, moments, profile, total }`
+- `GET /public/profile/:userId` → `{ success, profile, data, userId }`
+- `GET /profile/:userId` → `{ success, profile, data, userId }`
+- `POST /follow` → `{ success, isFollowing, follow, data }`
+- `DELETE /follow/:userId` → `{ success, isFollowing, deleted, targetUserId, data }`
+- `GET /is-following/:userId` → `{ success, isFollowing, targetUserId, self?, data }`
+- `GET /following` → `{ success, items, following, total }`
+- `GET /library` → `LibraryItem[]`（保持裸数组，因用户端 `apiGet` 直接按数组消费）
+- `POST /upload-url` → `{ success, uploadUrl, path, contentType }`
+- `GET /image-url/:path` → `{ success, url, path }`
+- `POST /journal-feature/:id` → `{ success, isFeatured, item }`
+- `DELETE /journal/:id` → `{ success, deletedId, deletedKey }`
+- `GET /journal-detail/:id` → `Journal object`
+- `GET /journal/:id/detail` → `Journal object`（安全别名，语义更直观）
+
+### 备注
+- `GET /journal/:plantId` 仍表示“按植物查询该植物下所有日记”；`DELETE /journal/:id` 表示“按日记 id 删除单篇日记”。两者同路径不同 method，当前前后端调用已可区分。
+- 因为 `GET /journal/:id` 会与 `GET /journal/:plantId` 冲突，所以没有直接复用该形状；本轮新增 `GET /journal/:id/detail` 作为安全别名，不影响旧调用。
+- `/library` 暂未改成包装对象，是刻意保持与用户端现有 `apiGet<any[]>('/library')` 一致，避免再触发前端 fallback。

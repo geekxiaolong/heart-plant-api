@@ -1,8 +1,27 @@
 # heart-plant-api 使用文档
 
 ## 1. 本地运行
+1. 复制环境文件：
+```bash
+cp .env.example .env.local
+```
+2. 填入以下变量后启动：
+   - `SUPABASE_URL`
+   - `SUPABASE_SERVICE_ROLE_KEY`（必需；缺失时写入 / 管理接口 / bucket 初始化会因 RLS 受限）
+   - `SUPABASE_ANON_KEY`
+   - `DEV_ADMIN_BYPASS_TOKEN`（可选，仅本地调试 `/admin/*`）
+
+启动命令：
 ```bash
 deno task serve
+```
+如需单次启动（不 watch）：
+```bash
+deno task serve:once
+```
+静态检查：
+```bash
+deno task check
 ```
 
 ## 2. 部署方式
