@@ -1,4 +1,5 @@
 import { Hono } from "npm:hono";
+import { normalizeLibraryItem } from "../lib/plant-mapper.ts";
 
 interface LibraryRouteDeps {
   getUser: (c: any) => Promise<any>;
@@ -31,7 +32,7 @@ export function createLibraryRoutes(deps: LibraryRouteDeps) {
   library.get("/library", async (c) => {
     try {
       const items = await deps.kv.getByPrefix("library:");
-      return c.json(items || []);
+      return c.json((items || []).map(normalizeLibraryItem));
     } catch (err: any) {
       return c.json({ error: "Failed to fetch library", details: err.message }, 500);
     }
@@ -43,13 +44,45 @@ export function createLibraryRoutes(deps: LibraryRouteDeps) {
       const authError = requireAdmin(user);
       if (authError) return c.json(authError.body, authError.status as 401 | 403);
 
-      const data = await c.req.json();
+      const data = normalizeLibraryItem(await c.req.json());
       if (!data.id) data.id = `p${Date.now()}`;
       if (!data.addedDate) data.addedDate = new Date().toISOString().split("T")[0];
-      await deps.kv.set(toLibraryKey(String(data.id)), data);
-      return c.json({ ...data, success: true });
+      const normalized = normalizeLibraryItem(data);
+      await deps.kv.set(toLibraryKey(String(normalized.id)), normalized);
+      return c.json({ ...normalized, success: true });
     } catch (err: any) {
       return c.json({ error: "Failed to save library item", details: err.message, success: false }, 400);
+    }
+  });
+
+  library.put("/library/:id", async (c) => {
+    try {
+      const user = await deps.getUser(c);
+      const authError = requireAdmin(user);
+      if (authError) return c.json(authError.body, authError.status as 401 | 403);
+
+      const id = c.req.param("id");
+      if (!id) return c.json({ error: "Library id is required", success: false }, 400);
+
+      const key = toLibraryKey(id);
+      const existing = await deps.kv.get(key);
+      if (!existing) return c.json({ error: "Library item not found", success: false }, 404);
+
+      const patch = normalizeLibraryItem(await c.req.json());
+      const merged = normalizeLibraryItem({
+        ...existing,
+        ...patch,
+        id: existing.id || id,
+        libraryId: existing.libraryId || existing.id || id,
+        originalId: existing.originalId || existing.libraryId || existing.id || id,
+        created_at: existing.created_at || existing.createdAt,
+        createdAt: existing.createdAt || existing.created_at,
+      });
+
+      await deps.kv.set(key, merged);
+      return c.json({ ...merged, success: true });
+    } catch (err: any) {
+      return c.json({ error: "Failed to update library item", details: err.message, success: false }, 400);
     }
   });
 

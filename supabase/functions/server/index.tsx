@@ -14,6 +14,15 @@ import { createStatsRoutes } from "./routes/stats.ts";
 import { createUploadRoutes } from "./routes/upload.ts";
 import { createTimelineRoutes } from "./routes/timeline.ts";
 import { createFollowRoutes } from "./routes/follow.ts";
+import { createMeRoutes } from "./routes/me.ts";
+import { createPlantAvatarRoutes } from "./routes/plant-avatar.ts";
+import { getUserFromRequest } from "./lib/auth.ts";
+import { buildUserProfile, updateUserProfile } from "./lib/profile.ts";
+import {
+  normalizePlantRecord,
+  pickFirstString,
+  resolvePlantFromCollection,
+} from "./lib/plant-mapper.ts";
 
 const app = new Hono();
 
@@ -69,125 +78,28 @@ if (!hasServiceRoleKey) {
   );
 }
 
+// 按 key 拉取植物库，用于品种校正（value 无 id 时用 key 推导 libraryId）
+const KV_TABLE = "kv_store_4b732228";
+async function getLibraryWithKeys(): Promise<{ key: string; value: any }[]> {
+  const { data, error } = await supabase.from(KV_TABLE).select("key, value").like("key", "library:%");
+  if (error) throw new Error(error.message);
+  return Array.isArray(data) ? data : [];
+}
+// 按 key 拉取植物，保证每条都有 key 可解析 libraryId（value 无 id 时用 key 当作 id）
+async function getPlantsWithKeys(): Promise<{ key: string; value: any }[]> {
+  const { data, error } = await supabase.from(KV_TABLE).select("key, value").like("key", "plant:%");
+  if (error) throw new Error(error.message);
+  return Array.isArray(data) ? data : [];
+}
+
 // Helper to get user from token
 async function getUser(c: any) {
-  try {
-    let token = c.req.header("X-User-JWT");
-
-    if (!token) {
-      const authHeader = c.req.header("Authorization");
-      if (authHeader) {
-        const parts = authHeader.split(" ");
-        if (parts.length === 2 && parts[0].toLowerCase() === "bearer") {
-          token = parts[1];
-        } else {
-          token = authHeader;
-        }
-      }
-    }
-
-    if (!token) {
-      console.log("No token provided");
-      return null;
-    }
-
-    if (devAdminBypassToken && token.trim() === devAdminBypassToken) {
-      return {
-        id: "dev-admin",
-        email: "776427024@qq.com",
-        user_metadata: { role: "admin", name: "Local Dev Admin" },
-      };
-    }
-
-    const anonKey = supabaseAnonKey;
-    const serviceKey = supabaseServiceRoleKey;
-
-    // Clean token comparison
-    const cleanToken = token.trim();
-
-    // Check if it's the anon key or service key first
-    if (cleanToken === anonKey || cleanToken === serviceKey) {
-      return null;
-    }
-
-    // Robust JWT check
-    const parts = cleanToken.split(".");
-    if (!cleanToken || cleanToken.length < 50 || parts.length !== 3) {
-      console.log(
-        "Skipping auth: token is invalid JWT format or not a user token",
-      );
-      return null;
-    }
-
-    // Deep check: Decipher payload to check for 'sub' (subject) claim
-    // This prevents the "missing sub claim" error from Supabase Auth
-    try {
-      const payload = JSON.parse(
-        atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")),
-      );
-      if (!payload || !payload.sub) {
-        console.log(
-          "Skipping auth: JWT is valid but missing 'sub' claim (likely anon/service key)",
-        );
-        return null;
-      }
-    } catch (e) {
-      console.log("Skipping auth: Could not parse JWT payload");
-      return null;
-    }
-
-    console.log("Attempting to verify user token...");
-    const { data: { user }, error } = await supabase.auth.getUser(cleanToken);
-    if (error) {
-      console.error("Auth error:", error.message);
-      return null;
-    }
-    if (!user) {
-      console.log("No user found for token");
-      return null;
-    }
-    console.log("User authenticated:", user.email);
-    return user;
-  } catch (err) {
-    console.error("getUser error:", err);
-    return null;
-  }
-}
-
-function buildDefaultProfile(user: any) {
-  const metadata = (user?.user_metadata || {}) as Record<string, any>;
-  const fallbackName = user?.email?.split("@")[0] || "用户";
-  return {
-    id: user?.id,
-    email: user?.email || "",
-    name: metadata.name || fallbackName,
-    avatar: metadata.avatar || "",
-    bio: metadata.bio || "",
-    location: metadata.location || "",
-    role: metadata.role ||
-      (user?.email?.toLowerCase() === "776427024@qq.com" ? "admin" : "user"),
-  };
-}
-
-async function getProfileOverrides(userId: string) {
-  try {
-    return (await kv.get(`profile:${userId}`)) || null;
-  } catch (err) {
-    console.error("getProfileOverrides error:", err);
-    return null;
-  }
-}
-
-async function buildUserProfile(user: any) {
-  const baseProfile = buildDefaultProfile(user);
-  const overrides = user?.id ? await getProfileOverrides(user.id) : null;
-  return {
-    ...baseProfile,
-    ...(overrides || {}),
-    id: user?.id,
-    email: user?.email || baseProfile.email,
-    role: overrides?.role || baseProfile.role,
-  };
+  return await getUserFromRequest(c, {
+    supabase,
+    supabaseAnonKey,
+    supabaseServiceRoleKey,
+    devAdminBypassToken,
+  });
 }
 
 const ACHIEVEMENTS = [
@@ -402,7 +314,21 @@ const registerRoutes = (r: Hono) => {
 
   r.post("/signup", async (c) => {
     try {
-      const { email, password, name } = await c.req.json();
+      if (!hasServiceRoleKey) {
+        console.warn("Signup called but SUPABASE_SERVICE_ROLE_KEY is not set");
+        return c.json({
+          error: "注册服务暂未配置，请联系管理员",
+          code: "SIGNUP_UNAVAILABLE",
+          success: false,
+        }, 503);
+      }
+      const body = await c.req.json().catch(() => ({}));
+      const email = body?.email?.trim();
+      const password = body?.password;
+      const name = body?.name?.trim() ?? "";
+      if (!email || !password) {
+        return c.json({ error: "请填写邮箱和密码", success: false }, 400);
+      }
       const { data, error } = await supabase.auth.admin.createUser({
         email,
         password,
@@ -414,7 +340,7 @@ const registerRoutes = (r: Hono) => {
       });
 
       if (error) {
-        const isDuplicate = error.message.includes("already been registered");
+        const isDuplicate = error.message.includes("already been registered") || error.message.includes("already exists");
         if (isDuplicate) {
           console.log(`Signup attempt for existing user: ${email}`);
           return c.json({
@@ -429,8 +355,9 @@ const registerRoutes = (r: Hono) => {
 
       return c.json({ success: true, user: data.user });
     } catch (err: any) {
+      console.error("Signup exception:", err);
       return c.json(
-        { error: "Failed to create user", details: err.message },
+        { error: "注册失败", details: err?.message ?? String(err), success: false },
         500,
       );
     }
@@ -439,7 +366,7 @@ const registerRoutes = (r: Hono) => {
   r.get("/profile", async (c) => {
     const user = await getUser(c);
     if (!user) return c.json({ error: "Unauthorized" }, 401);
-    return c.json(await buildUserProfile(user));
+    return c.json(await buildUserProfile(kv, user, supabase));
   });
 
   r.put("/profile", async (c) => {
@@ -447,72 +374,15 @@ const registerRoutes = (r: Hono) => {
       const user = await getUser(c);
       if (!user) return c.json({ error: "Unauthorized" }, 401);
 
-      const body = await c.req.json();
-      const metadata = (user.user_metadata || {}) as Record<string, any>;
-      const nextName = String(
-        body?.name || metadata.name || user.email?.split("@")[0] || "",
-      ).trim();
-      const nextBio = String(body?.bio || "").trim();
-      const nextLocation = String(body?.location || "").trim();
-      const nextAvatar = String(body?.avatar || "").trim();
+      const result = await updateUserProfile(
+        kv,
+        user,
+        await c.req.json(),
+        supabase,
+      );
 
-      if (!nextName) {
-        return c.json({ error: "name is required" }, 400);
-      }
-
-      const nextMetadata: Record<string, any> = {
-        ...metadata,
-        name: nextName,
-        bio: nextBio,
-        location: nextLocation,
-        avatar: nextAvatar,
-      };
-
-      let updatedUser = user;
-      let authUpdated = false;
-
-      if (supabase.auth.admin?.updateUserById) {
-        const { data, error } = await supabase.auth.admin.updateUserById(
-          user.id,
-          {
-            user_metadata: nextMetadata,
-          },
-        );
-
-        if (!error && data?.user) {
-          updatedUser = data.user;
-          authUpdated = true;
-        } else if (error) {
-          console.warn(
-            "profile auth metadata update failed, falling back to KV override:",
-            error.message,
-          );
-        }
-      }
-
-      const profileRecord = {
-        id: user.id,
-        email: user.email || "",
-        name: nextName,
-        bio: nextBio,
-        location: nextLocation,
-        avatar: nextAvatar,
-        role: nextMetadata.role ||
-          (user.email?.toLowerCase() === "776427024@qq.com" ? "admin" : "user"),
-        updated_at: new Date().toISOString(),
-        source: authUpdated ? "auth+kv" : "kv",
-      };
-
-      await kv.set(`profile:${user.id}`, profileRecord);
-
-      return c.json({
-        success: true,
-        profile: {
-          ...(await buildUserProfile(updatedUser)),
-          updated_at: profileRecord.updated_at,
-        },
-        authUpdated,
-      });
+      c.status(result.status as 200 | 400);
+      return c.json(result.body);
     } catch (err: any) {
       console.error("PUT /profile error:", err);
       return c.json(
@@ -523,15 +393,17 @@ const registerRoutes = (r: Hono) => {
   });
 
   r.route("/", createLibraryRoutes({ getUser, kv }));
-  r.route("/", createPlantRoutes({ getUser, updateUserStats, kv }));
+  r.route("/", createPlantRoutes({ getUser, updateUserStats, kv, getLibraryWithKeys, getPlantsWithKeys }));
   r.route("/", createMoodJournalRoutes({ getUser, updateUserStats, kv }));
   r.route("/", createMomentRoutes({ getUser, updateUserStats, kv, supabase }));
   r.route("/", createInviteRoutes({ getUser, updateUserStats, kv }));
   r.route("/", createNotificationRoutes({ kv }));
   r.route("/", createFollowRoutes({ getUser, kv, supabase }));
+  r.route("/", createMeRoutes({ getUser, kv, supabase }));
   r.route("/", createStatsRoutes({ getUser, updateUserStats, kv }));
   r.route("/", createUploadRoutes({ supabase, bucketName }));
   r.route("/", createTimelineRoutes({ kv }));
+  r.route("/", createPlantAvatarRoutes({ getUser }));
 
   // Batch seeding to prevent 502 gateway errors and rate limiting
   r.post("/seed-batch", async (c) => {
@@ -585,11 +457,28 @@ const registerRoutes = (r: Hono) => {
   r.post("/log-activity", async (c) => {
     try {
       const user = await getUser(c);
-      const { plantId, type, userName, details } = await c.req.json();
-      const activityId = `activity:${plantId}:${Date.now()}`;
+      const { plantId, libraryId, originalId, type, userName, details } =
+        await c.req.json();
+      const requestedPlantId = pickFirstString(plantId, libraryId, originalId);
+      if (!requestedPlantId) {
+        return c.json({ error: "Plant id is required" }, 400);
+      }
+
+      const allPlants = ((await kv.getByPrefix("plant:")) || []).map(
+        normalizePlantRecord,
+      );
+      const resolvedPlant = resolvePlantFromCollection(
+        allPlants,
+        requestedPlantId,
+      );
+      const resolvedPlantId = resolvedPlant?.id || requestedPlantId;
+      const activityId = `activity:${resolvedPlantId}:${Date.now()}`;
       const activity = {
         id: activityId,
-        plantId,
+        plantId: resolvedPlantId,
+        libraryId: resolvedPlant?.libraryId || requestedPlantId,
+        originalId: resolvedPlant?.originalId || resolvedPlant?.libraryId ||
+          requestedPlantId,
         actionType: type,
         userName,
         details,
@@ -597,13 +486,13 @@ const registerRoutes = (r: Hono) => {
       };
       await kv.set(activityId, activity);
 
-      const plant = await kv.get(plantId);
+      const plant = await kv.get(resolvedPlantId);
       if (plant) {
         plant.health = Math.min(
           100,
           (plant.health || 0) + (type === "watering" ? 5 : 2),
         );
-        await kv.set(plantId, plant);
+        await kv.set(resolvedPlantId, plant);
       }
 
       // Update user stats for watering
@@ -641,7 +530,7 @@ const registerRoutes = (r: Hono) => {
 // Create a sub-router for all API endpoints
 const api = new Hono();
 registerRoutes(api);
-const adminRoutes = createAdminRoutes({ getUser, kv });
+const adminRoutes = createAdminRoutes({ getUser, kv, supabase });
 api.route("/admin", adminRoutes);
 
 // Register routes explicitly on the main app to avoid mounting issues in some environments

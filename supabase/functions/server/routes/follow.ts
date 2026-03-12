@@ -96,13 +96,13 @@ async function resolveTargetProfile(
 export function createFollowRoutes(deps: FollowRouteDeps) {
   const follow = new Hono();
 
-  follow.post("/follow", async (c) => {
+  const handleFollow = async (c: any, targetUserIdInput?: string) => {
     try {
       const user = await deps.getUser(c);
       if (!user) return c.json({ success: false, error: "Unauthorized" }, 401);
 
-      const body = await c.req.json();
-      const targetUserId = String(body?.targetUserId || "").trim();
+      const body = targetUserIdInput ? null : await c.req.json().catch(() => ({}));
+      const targetUserId = String(targetUserIdInput || body?.targetUserId || "").trim();
       if (!targetUserId) {
         return c.json(
           { success: false, error: "targetUserId is required" },
@@ -141,7 +141,10 @@ export function createFollowRoutes(deps: FollowRouteDeps) {
         details: err.message,
       }, 400);
     }
-  });
+  };
+
+  follow.post("/follow", async (c) => handleFollow(c));
+  follow.post("/follow/:userId", async (c) => handleFollow(c, String(c.req.param("userId") || "").trim()));
 
   follow.delete("/follow/:userId", async (c) => {
     try {

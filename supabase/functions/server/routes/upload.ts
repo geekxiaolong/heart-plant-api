@@ -52,7 +52,9 @@ export function createUploadRoutes(deps: UploadRouteDeps) {
       if (error) throw error;
       return c.json({ success: true, url: data.signedUrl, path });
     } catch (err: any) {
-      return c.json({ success: false, error: "Failed to create image URL", details: err.message }, 500);
+      const message = err?.message || "Unknown error";
+      const isNotFound = message.toLowerCase().includes("not found") || err?.status === 404 || err?.statusCode === 404;
+      return c.json({ success: false, error: "Failed to create image URL", details: message }, isNotFound ? 404 : 500);
     }
   });
 

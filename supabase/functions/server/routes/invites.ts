@@ -1,4 +1,5 @@
 import { Hono } from "npm:hono";
+import { normalizePlantRecord } from "../lib/plant-mapper.ts";
 
 interface InviteRouteDeps {
   getUser: (c: any) => Promise<any>;
@@ -35,24 +36,24 @@ export function createInviteRoutes(deps: InviteRouteDeps) {
       const plant = await deps.kv.get(data.plantId);
       if (!plant) return c.json({ error: "Plant not found" }, 404);
 
-      if (!plant.ownerEmails) plant.ownerEmails = [];
-      if (!plant.owners) plant.owners = [];
-      if (!plant.ownerIds) plant.ownerIds = [];
+      const normalizedPlant = normalizePlantRecord(plant);
+      const userEmail = (user.email || "").toLowerCase();
 
-      if (!plant.ownerEmails.includes(user.email)) {
-        const userEmail = user.email || "";
-        plant.owners.push(userName || user.user_metadata?.name || userEmail.split("@")[0] || "用户");
-        plant.ownerEmails.push(userEmail);
-        plant.ownerIds.push(user.id);
+      if (!normalizedPlant.ownerEmails.includes(userEmail) && !normalizedPlant.ownerIds.includes(user.id)) {
+        normalizedPlant.owners.push(userName || user.user_metadata?.name || userEmail.split("@")[0] || "用户");
+        normalizedPlant.ownerEmails.push(userEmail);
+        normalizedPlant.ownerIds.push(user.id);
 
-        await deps.kv.set(data.plantId, plant);
+        const nextPlant = normalizePlantRecord(normalizedPlant);
+        await deps.kv.set(data.plantId, nextPlant);
         await deps.updateUserStats(user.id, "plants", 1);
+        await deps.kv.del(`notification:${userEmail}:${inviteCode?.toUpperCase()}`);
+        return c.json({ success: true, plant: nextPlant });
       }
 
-      const userEmail = (user.email || "").toLowerCase();
       await deps.kv.del(`notification:${userEmail}:${inviteCode?.toUpperCase()}`);
 
-      return c.json({ success: true, plant });
+      return c.json({ success: true, plant: normalizedPlant });
     } catch (err: any) {
       return c.json({ error: "Failed to accept invite", details: err.message }, 400);
     }
